@@ -1,0 +1,386 @@
+---
+title: "Plate Discipline"
+author: "Joshua Mould"
+date: "2/28/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Quantifying MLB Hitter Plate Discipline
+
+Import Necessary Packages
+```{r setup, include=FALSE}
+
+
+#install.packages("pacman")
+
+pacman::p_load(tidyverse, modelr, baseballr, gam, randomForest, caret, xgboost, mlr, ggthemes, e1071, remotes, formatR, Boruta, stringi)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=60), tidy=TRUE)
+options(scipen = 999)
+
+
+GetAUC <- function(model, data, Target){
+library(pacman)
+p_load(ROCR)
+
+pred <- predict(model, type="response")
+  prediction <- prediction(pred, Target)
+  Perf <- performance(prediction, "auc")
+  return(as.numeric(Perf@y.values[1]))
+
+}
+```
+
+Load in EAGLE RDS data directly rather than running the functions.
+```{r}
+
+data_2016 <- readRDS("EAGLE_2016.rds")
+data_2017 <- readRDS("EAGLE_2017.rds")
+data_2018 <- readRDS("EAGLE_2018.rds")
+data_2019 <- readRDS("EAGLE_2019.rds")
+data_2020 <- readRDS("EAGLE_2020.rds")
+data_2021 <- readRDS("EAGLE_2021.rds")
+
+
+
+```
+
+
+Create combined season data frame with commonly used metrics and EAGLE so that we have each hitter from 2016-2021
+```{r}
+eye_2016 <- data_2016 %>% filter(PA >= 200, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS),  kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+eye_2017 <- data_2017 %>% filter(PA >= 200, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS),  kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+eye_2018 <- data_2018 %>% filter(PA >= 200, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS), kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+eye_2019 <- data_2019 %>% filter(PA >= 200, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS), kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+eye_2020 <- data_2020 %>% filter(PA >= 150, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS), kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+eye_2021 <- data_2021 %>% filter(PA >= 200, !is.na(expRA_swing)) %>% group_by(batter, Name) %>% summarize(year = first(season.x), runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)), EAGLE = wRA / n(), avg = first(BA), obp = first(OBP), ops = first(OPS), kperc = first(SO.x) / first(PA), bbperc = first(BB.x) / first(PA), perc_swing_out_zone = sum(ifelse(strike_prob < .3 & swing == 1, 1, 0)) / sum(ifelse(strike_prob < .3, 1, 0))) 
+
+
+eye_all <- eye_2016 %>% full_join(eye_2017, by = c("batter")) %>% full_join(eye_2018, by = c("batter")) %>% full_join(eye_2019, by = c("batter")) %>% full_join(eye_2020, by = c("batter")) %>% full_join(eye_2021, by = c("batter"))
+
+eye_all <- eye_all %>% rename(wRL_2016 = runs_lost.x, wRL_2017 = runs_lost.y, wRL_2018 = runs_lost.x.x, wRL_2019 = runs_lost.y.y, wRL_2020 = runs_lost.x.x.x, wRL_2021 = runs_lost.y.y.y)
+
+```
+
+
+Create data frame containing player stats from consecutive years so that we can see predictabililty and correlation across years
+```{r}
+eye_this_next1 <- eye_2016 %>% left_join(eye_2017, by = c("batter", "Name")) 
+eye_this_next2 <- eye_2017 %>% left_join(eye_2018, by = c("batter", "Name"))
+eye_this_next3 <- eye_2018 %>% left_join(eye_2019, by = c("batter", "Name"))
+
+eye_this_next <- bind_rows(eye_this_next1, eye_this_next2, eye_this_next3)
+
+remove(eye_this_next1, eye_this_next2, eye_this_next3)
+
+```
+
+
+Look at results of outcome probabilities xgboost model
+```{r}
+all_years <- rbind(data_2016, data_2017, data_2018, data_2019, data_2020, data_2021)
+
+levs = c("Miss", "Foul", "Out", "Single", "Double", "Triple", "Homerun")
+
+all_years %>% 
+  filter(!is.na(outcome)) %>% 
+  group_by(outcome) %>% 
+  summarize(Miss = mean(Miss, na.rm = T), 
+            Foul = mean(Foul, na.rm = T), 
+            Out = mean(Out, na.rm = T), 
+            Single = mean(Single, na.rm = T), 
+            Double = mean(Double, na.rm = T), 
+            Triple = mean(Triple, na.rm = T), 
+            Homerun = mean(Homerun, na.rm = T)) %>% 
+  mutate(outcome =  factor(outcome, levels = levs)) %>%
+  arrange(outcome)
+
+```
+
+
+Run linear regression models in order to test for significant relationships between EAGLE and other significant statistics
+```{r}
+
+####
+# Test EAGLE correlation from year to year
+eye_this_next_mod <- lm(EAGLE.y ~ EAGLE.x, data = eye_this_next)
+summary(eye_this_next_mod)
+
+####
+
+# Test with AVG
+ba_eye_mod <- lm(avg.x ~ EAGLE.x, data = eye_this_next)
+summary(ba_eye_mod)
+
+next_ba_eye_mod <- lm(avg.y ~ EAGLE.x, eye_this_next)
+summary(next_ba_eye_mod)
+
+both_ba_eye_mod <- lm(avg.y ~ EAGLE.x + avg.x, eye_this_next)
+summary(both_ba_eye_mod)
+
+# Test for OBP
+obp_eye_mod <- lm(obp.x ~ EAGLE.x, data = eye_this_next)
+summary(obp_eye_mod)
+
+next_obp_eye_mod <- lm(obp.y ~ EAGLE.x, eye_this_next)
+summary(next_obp_eye_mod)
+
+both_obp_eye_mod <- lm(obp.y ~ EAGLE.x + obp.x, eye_this_next)
+summary(both_obp_eye_mod)
+
+# Now for OPS
+ops_eye_mod <- lm(ops.x ~ EAGLE.x, data = eye_this_next)
+summary(ops_eye_mod)
+
+next_ops_eye_mod <- lm(ops.y ~ EAGLE.x, eye_this_next)
+summary(next_ops_eye_mod)
+
+ops_ops_eye_mod <- lm(ops.y ~ ops.x, eye_this_next)
+summary(ops_ops_eye_mod)
+
+both_ops_eye_mod <- lm(ops.y ~ EAGLE.x + ops.x, eye_this_next)
+summary(both_ops_eye_mod)
+
+###
+```
+
+
+#Create graphs for important relationships
+
+First create graph for walk percentage while also testing the relationship with a linear regression model
+```{r}
+eye_this_next %>% filter(EAGLE.x >= 0) %>% ggplot(aes(x = EAGLE.x, y = bbperc.x)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and BB%", 
+       subtitle = "2016-2021") +
+  xlab("EAGLE") +
+  ylab("BB%")
+
+bbperc_mod <- lm(bbperc.x ~ EAGLE.x, data = eye_this_next)
+summary(bbperc_mod)
+
+```
+
+Graph for relationship with O% and also test it with a linear regression model
+```{r}
+eye_this_next %>% filter(EAGLE.x >= 0 & perc_swing_out_zone.x < .8) %>% ggplot(aes(x = EAGLE.x, y = perc_swing_out_zone.x)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and O%", 
+       subtitle = "2016-2021") +
+  xlab("EAGLE") +
+  ylab("O%")
+
+operc_mod <- lm(perc_swing_out_zone.x ~ EAGLE.x, data = eye_this_next)
+summary(operc_mod)
+```
+
+
+Create graph for relationship of EAGLE with OBP
+```{r}
+eye_this_next %>% 
+  filter(!is.na(EAGLE.x), !is.na(obp.x), EAGLE.x >= .025) %>% 
+  ggplot(aes(EAGLE.x, obp.x)) + 
+  geom_point() + 
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  ggtitle("Correlation to OBP") + 
+  xlab("EAGLE") + 
+  ylab("OBP")
+
+```
+
+
+Create graph to highlight the correlation of EAGLE from year to year
+```{r}
+eye_this_next %>% filter(EAGLE.x >= 0) %>% ggplot(aes(x = EAGLE.x, y = EAGLE.y)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLEs from year to year", 
+       subtitle = "2016-2021") +
+  xlab("EAGLE 1") +
+  ylab("EAGLE 2")
+
+```
+
+Create graphs showing the relationship of EAGLE with the current year's OPS and with the next year's OPS
+```{r}
+eye_this_next %>% filter(EAGLE.x >= 0) %>% ggplot(aes(x = EAGLE.x, y = ops.x)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and OPS", 
+       subtitle = "2016-2021") +
+  xlab("EAGLE") +
+  ylab("OPS")
+
+eye_this_next %>% filter(EAGLE.x >= 0) %>% ggplot(aes(x = EAGLE.x, y = ops.y)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and Next Year's OPS", 
+       subtitle = "2016-2019") +
+  xlab("EAGLE") +
+  ylab("Next Year's OPS")
+```
+
+
+Bring the data of all the years together to calculate predictions from percentiles in addition to testing correlation. Also check out who is the best/worst in EAGLE
+```{r}
+
+all_eye <- all_years %>% 
+  mutate(season.x = as.numeric(season.x)) %>% 
+  filter(PA >= 300, !is.na(expRA_swing)) %>% 
+  group_by(Name, season.x) %>% 
+  summarize(runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), 
+            wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)),
+            ba = first(BA),
+            obp = first(OBP),
+            slg = first(SLG),
+            ops = first(OPS),
+            pitches = n(),
+            bb_perc = first(BB.x) / first(PA),
+            o_perc = sum(ifelse(strike_prob < .5 & swing == 1, 1, 0), na.rm = T) / sum(ifelse(strike_prob < .5, 1, 0), na.rm = T)) %>% 
+  mutate(EAGLE = wRA / pitches)
+
+all_eye %>% select(Name, season.x, EAGLE, bb_perc, o_perc) %>% arrange(-EAGLE) %>% head(30)
+all_eye %>% select(Name, season.x, EAGLE, bb_perc, o_perc) %>% arrange(EAGLE) %>% head(10)
+
+eagle_perc <- quantile(all_eye$EAGLE, probs = c(.1, .25, .75, .9))
+percentiles <- data_frame(percentile = c("10th percentile", "25th percentile", "75th percentile", "90th percentile"), EAGLE.x = eagle_perc)
+percentiles %>% add_predictions(ops_eye_mod, var = "OPS")
+percentiles %>% add_predictions(next_ops_eye_mod, var = "Next_OPS")
+
+all_eye %>% ggplot(aes(EAGLE)) + geom_density()
+
+cor(all_eye$EAGLE, all_eye$ops)
+
+cor(all_eye$o_perc, all_eye$ops)
+```
+
+Current Year EAGLE correlated with current year statistics and next year's EAGLE
+```{r}
+eye_this_next %>% 
+  ungroup() %>% 
+  select(EAGLE.x, avg.x, obp.x, ops.x, kperc.x, bbperc.x, perc_swing_out_zone.x, EAGLE.y) %>% 
+  rename(o_perc = perc_swing_out_zone.x, EAGLE_cur_year = EAGLE.x, EAGLE_next_year = EAGLE.y) %>% 
+  cor(use = "complete.obs")
+
+```
+
+
+Inverse EAGLE, look at EAGLE for pitchers. Who is the most deceptive/good at getting batters to make the wrong decision by swinging at bad pitches or taking good pitches
+```{r}
+all_pitchers_eye <- all_years %>% 
+  mutate(season.x = as.numeric(season.x)) %>% 
+  filter(IP >= 20, !is.na(expRA_swing)) %>% 
+  group_by(pitcher_name, season.x) %>% 
+  summarize(runs_lost = sum(runs_lost_bad_dec) / sum(abs_eRA_s), 
+            wRA = sum(ifelse(swing == 1, expRA_swing, -expRA_swing)),
+            IP = first(IP),
+            ERA = first(ERA),
+            K_perc= first(SO_perc),
+            BB_perc = first(uBB_perc),
+            xwOBA = mean(estimated_woba_using_speedangle, na.rm = T),
+            pitches = n(),
+            o_perc = sum(ifelse(strike_prob < .5 & swing == 1, 1, 0), na.rm = T) / sum(ifelse(strike_prob < .5, 1, 0), na.rm = T)) %>% 
+  mutate(EAGLE = wRA / pitches)
+
+all_pitchers_eye %>% select(pitcher_name, season.x, EAGLE, IP, ERA, K_perc, BB_perc, o_perc) %>% filter(IP >= 90 | IP >= 40 & season.x == 2020) %>% arrange(EAGLE)
+
+all_pitchers_eye %>% select(pitcher_name, season.x, EAGLE, IP, ERA, K_perc, BB_perc, o_perc) %>% filter(IP >= 40 & IP <= 85 & season.x != 2020 | IP <= 35 & season.x == 2020) %>% arrange(EAGLE)
+
+
+
+```
+
+
+Check out the relationship of pitching EAGLE with other common pitcher metrics.
+```{r}
+all_pitchers_eye %>% 
+  filter(IP >= 50) %>% 
+  ggplot(aes(x = EAGLE, y = ERA)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between Inverse EAGLE and ERA", 
+       subtitle = "2016-2021 (min. 40 IP)") +
+  xlab("EAGLE") +
+  ylab("ERA")
+
+
+qualified_pitchers <- all_pitchers_eye %>% filter(IP >= 50)
+
+ERA_mod <- lm(ERA ~ EAGLE, data = qualified_pitchers)
+summary(ERA_mod)
+```
+
+
+```{r}
+all_pitchers_eye %>% filter(IP >= 50) %>% ggplot(aes(x = EAGLE, y = K_perc)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and K%", 
+       subtitle = "2016-2019") +
+  xlab("EAGLE") +
+  ylab("K%")
+
+k_perc_mod <- lm(K_perc ~ EAGLE, data = qualified_pitchers)
+summary(k_perc_mod)
+```
+
+
+```{r}
+
+
+all_pitchers_eye%>% filter(IP >= 50) %>% ggplot(aes(x = EAGLE, y = BB_perc)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and BB%", 
+       subtitle = "2016-2019") +
+  xlab("EAGLE") +
+  ylab("BB%")
+```
+
+
+```{r}
+all_pitchers_eye%>% filter(IP >= 50) %>% ggplot(aes(x = EAGLE, y = o_perc)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and O%", 
+       subtitle = "2016-2019") +
+  xlab("EAGLE") +
+  ylab("O%")
+
+```
+
+
+```{r}
+
+all_pitchers_eye%>% filter(IP >= 50) %>% ggplot(aes(x = EAGLE, y = xwOBA)) + 
+  geom_point() +
+  stat_smooth(method = "lm") + 
+  theme_gdocs() + 
+  labs(title = "Relationship between EAGLE and xwOBA", 
+       subtitle = "2016-2019") +
+  xlab("EAGLE") +
+  ylab("xwOBA")
+
+```
+
+
+
+
